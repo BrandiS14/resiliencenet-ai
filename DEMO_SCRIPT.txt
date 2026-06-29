@@ -1,0 +1,46 @@
+[0:00 — HOOK]
+Hello everyone. Imagine being caught in a natural disaster like a major flood or wildfire, where every second counts, but all the critical information you need—evacuation routes, emergency shelters, and medical help—is scattered across dozens of different websites and emergency helplines. During a crisis, this fragmentation can be a matter of life and death.
+
+[0:20 — WHAT IT IS]
+That is why we built ResilienceNet AI. It is a collaborative multi-agent disaster resilience platform designed to help citizens, families, and emergency response teams prepare for, respond to, and recover from disasters. We developed this project under the Agents for Good track, using the Google Agent Development Kit to coordinate specialized AI agents that work together to provide personalized, safety-validated guidance.
+
+[0:40 — SHOW THE BANNER]
+(pause)
+(show assets/cover_page_banner.png)
+As you can see on our cover banner, ResilienceNet AI is built to be collaborative, secure, and intelligent, bringing together state-of-the-art multi-agent orchestration, secure PII redaction, and human-in-the-loop validation to ensure that emergency guidance is both accurate and safe.
+
+[1:00 — ARCHITECTURE]
+(pause)
+(show assets/architecture_diagram.png)
+Let's walk through our system architecture. 
+When a user submits a query, it first passes through our security checkpoint node. This node is our first line of defense—it automatically scrubs personally identifiable information like phone numbers and email addresses, checks for prompt injection attacks, and enforces a strict consent gate for location or health-related queries.
+Once the query is validated as safe, it goes to the coordinator node. The coordinator agent is the brain of the platform. It analyzes the emergency and delegates tasks to our six specialized sub-agents:
+The Hazard Agent for risk forecasting.
+The Shelter Agent for locating safe havens.
+The Healthcare Agent for medical facilities and guidance.
+The Resource Agent for securing food, water, and power backups.
+The Infrastructure Agent for monitoring road closures and utilities.
+And the Government Agent for official advisories.
+These agents query our custom Model Context Protocol server, which acts as a bridge to real-time weather, maps, healthcare, and government data.
+If the coordinator needs more details to give safe advice, it routes to a human review node, pausing the workflow to ask the user for input. Otherwise, it synthesizes the final response and delivers it via the final output node.
+
+[2:00 — LIVE DEMO]
+(pause)
+(switch to playground at localhost:18081)
+Let's see this in action. 
+I will paste our first test case into the playground chat: "I am in San Francisco, and there is a flood warning in my area. My phone number is 555-019-2831. I need to know where the nearest shelter is."
+(pause)
+Notice that because the query mentions a location, the security checkpoint immediately triggers our Human-in-the-Loop consent gate. The UI displays: "ResilienceNet AI requires your consent to process location or health-related data. Do you grant permission to proceed?".
+I will type "Yes" and submit.
+(pause)
+Now, look at the terminal logs on the right. You can see that our phone number was successfully redacted to "[PHONE_REDACTED]" before it ever reached the coordinator. 
+The coordinator then invokes the hazard agent and the shelter agent. The shelter agent queries the MCP server to find active shelters and safe evacuation routes in San Francisco, and the coordinator synthesizes this into a clear, actionable emergency plan.
+We also have scenarios for wildfires with medical asthma constraints, cyclones with pet-friendly shelters, and earthquakes with utility outages.
+
+[3:00 — SECURITY & MCP]
+(pause)
+What makes ResilienceNet AI production-ready is its robust security and performance optimization. 
+Our security checkpoint node ensures least-privilege access: the hazard agent cannot see medical tools, and the healthcare agent cannot see evacuation routing tools. We also implement a session-level cache in the workflow state. If the coordinator asks the same sub-agent for the same information twice, it hits the cache instantly, saving precious API quota. And if we ever hit a rate limit, our automatic 429 handler retries the call with exponential backoff so the user never experiences a crash.
+
+[3:30 — IMPACT / CLOSE]
+ResilienceNet AI provides individuals with a single, trusted source of truth during life-threatening events, while giving relief organizations a clear picture of shelter capacity and resource needs. By combining collaborative AI with strict safety boundaries, we can make communities more resilient and save lives. Thank you.

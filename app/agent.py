@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from google.adk.agents import Agent
 from google.adk.apps import App
 from google.adk.models import Gemini
-from google.adk.tools import AgentTool, McpToolset, tool
+from google.adk.tools import AgentTool, McpToolset, FunctionTool
 from google.adk.workflow import Workflow, Edge, START, node
 from google.adk.agents.context import Context
 from google.adk.events import RequestInput
@@ -148,7 +148,6 @@ government_agent = Agent(
 )
 
 # 2. Define optimized custom tool wrappers for sub-agents to support caching, logging, and 429 retries
-@tool
 async def get_hazard_assessment(location: str, disaster_type: str, ctx: Context) -> str:
     """Assess the hazard risk for a location and disaster type."""
     if not location or not disaster_type:
@@ -168,8 +167,7 @@ async def get_hazard_assessment(location: str, disaster_type: str, ctx: Context)
     ctx.state["cache"][cache_key] = response
     return response
 
-@tool
-async def get_shelter_and_evacuation_info(location: str, needs_pet_friendly: bool = False, needs_medical_access: bool = False, ctx: Context) -> str:
+async def get_shelter_and_evacuation_info(location: str, ctx: Context, needs_pet_friendly: bool = False, needs_medical_access: bool = False) -> str:
     """Identify safe evacuation routes and recommend nearby emergency shelters."""
     if not location:
         return "Please provide a location to find shelters."
@@ -192,8 +190,7 @@ async def get_shelter_and_evacuation_info(location: str, needs_pet_friendly: boo
     ctx.state["cache"][cache_key] = response
     return response
 
-@tool
-async def get_healthcare_guidance(location: str, urgent_needs: str = "", ctx: Context) -> str:
+async def get_healthcare_guidance(location: str, ctx: Context, urgent_needs: str = "") -> str:
     """Locate active medical facilities, emergency care, and get health safety guidance."""
     if not location:
         return "Please provide a location to find healthcare facilities."
@@ -212,8 +209,7 @@ async def get_healthcare_guidance(location: str, urgent_needs: str = "", ctx: Co
     ctx.state["cache"][cache_key] = response
     return response
 
-@tool
-async def get_essential_resources(location: str, resource_types: list[str] = [], ctx: Context) -> str:
+async def get_essential_resources(location: str, ctx: Context, resource_types: list[str] = []) -> str:
     """Secure essential supplies such as food, water, power, fuel, and charging stations."""
     if not location:
         return "Please provide a location to find resources."
@@ -233,8 +229,7 @@ async def get_essential_resources(location: str, resource_types: list[str] = [],
     ctx.state["cache"][cache_key] = response
     return response
 
-@tool
-async def get_infrastructure_status(location: str, route_details: str = "", ctx: Context) -> str:
+async def get_infrastructure_status(location: str, ctx: Context, route_details: str = "") -> str:
     """Check road closures, transit availability, utility outages, and communication status."""
     if not location:
         return "Please provide a location to check infrastructure."
@@ -253,7 +248,6 @@ async def get_infrastructure_status(location: str, route_details: str = "", ctx:
     ctx.state["cache"][cache_key] = response
     return response
 
-@tool
 async def get_government_advisories(location: str, ctx: Context) -> str:
     """Fetch official government alerts, safety advisories, and emergency helplines."""
     if not location:
@@ -278,12 +272,12 @@ coordinator_agent = Agent(
     name="coordinator_agent",
     model=model,
     tools=[
-        get_hazard_assessment,
-        get_shelter_and_evacuation_info,
-        get_healthcare_guidance,
-        get_essential_resources,
-        get_infrastructure_status,
-        get_government_advisories,
+        FunctionTool(get_hazard_assessment),
+        FunctionTool(get_shelter_and_evacuation_info),
+        FunctionTool(get_healthcare_guidance),
+        FunctionTool(get_essential_resources),
+        FunctionTool(get_infrastructure_status),
+        FunctionTool(get_government_advisories),
     ],
     instruction=(
         "You are the Coordinator Agent for ResilienceNet AI. Your job is to orchestrate the "

@@ -2,18 +2,18 @@ import os
 import re
 import json
 import logging
-import asyncio
 from typing import Any
 from pydantic import BaseModel, Field
 
 from google.adk.agents import Agent
 from google.adk.apps import App
 from google.adk.models import Gemini
-from google.adk.tools import AgentTool, McpToolset, FunctionTool
+from google.adk.tools import AgentTool, McpToolset
 from google.adk.workflow import Workflow, Edge, START, node
 from google.adk.agents.context import Context
 from google.adk.events import RequestInput
 from mcp import StdioServerParameters
+from google.genai.types import HttpRetryOptions
 
 from app.config import config
 
@@ -21,8 +21,16 @@ from app.config import config
 logging.basicConfig(level=logging.INFO)
 audit_logger = logging.getLogger("security_audit")
 
-# Initialize Gemini model using config.py
-model = Gemini(model=config.model)
+# Initialize Gemini model with native retry options for 429 rate limiting
+model = Gemini(
+    model=config.model,
+    retry_options=HttpRetryOptions(
+        attempts=3,
+        initial_delay=2.0,
+        max_delay=10.0,
+        http_status_codes=[429]
+    )
+)
 
 # Define the connection parameters for our local MCP server
 mcp_connection = StdioServerParameters(
@@ -60,25 +68,6 @@ government_mcp = McpToolset(
     connection_params=mcp_connection,
     tool_filter=["get_government_advisories"]
 )
-
-# Helper function to run a node with exponential backoff on 429 / ResourceExhausted
-async def run_node_with_retry(ctx: Context, target_node: Any, node_input: Any, max_retries: int = 3, initial_delay: float = 2.0) -> Any:
-    delay = initial_delay
-    for attempt in range(max_retries):
-        try:
-            return await ctx.run_node(target_node, node_input)
-        except Exception as e:
-            err_msg = str(e)
-            is_429 = "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg
-            if is_429 and attempt < max_retries - 1:
-                audit_logger.warning(
-                    f"Gemini API rate limit hit (429) for node '{getattr(target_node, 'name', 'unknown')}'."
-                    f" Retrying in {delay}s... (Attempt {attempt + 1}/{max_retries})"
-                )
-                await asyncio.sleep(delay)
-                delay *= 2
-            else:
-                raise e
 
 # 1. Define the specialized sub-agents with their respective MCP tools
 hazard_agent = Agent(
@@ -147,143 +136,31 @@ government_agent = Agent(
     )
 )
 
-# 2. Define optimized custom tool wrappers for sub-agents to support caching, logging, and 429 retries
-async def get_hazard_assessment(location: str, disaster_type: str, ctx: Context) -> str:
-    """Assess the hazard risk for a location and disaster type."""
-    if not location or not disaster_type:
-        return "Please provide a valid location and disaster type."
-    
-    cache_key = f"hazard_{location}_{disaster_type}".lower().strip()
-    cache = ctx.state.get("cache", {})
-    if cache_key in cache:
-        audit_logger.info(f"CACHE HIT: hazard_agent for '{cache_key}'")
-        return cache[cache_key]
-        
-    audit_logger.info(f"API CALL: Invoking hazard_agent for '{cache_key}'")
-    response = await run_node_with_retry(ctx, hazard_agent, f"Location: {location}, Disaster: {disaster_type}")
-    
-    if "cache" not in ctx.state:
-        ctx.state["cache"] = {}
-    ctx.state["cache"][cache_key] = response
-    return response
+# Wrap specialized agents as tools for the Coordinator
+hazard_tool = AgentTool(hazard_agent)
+shelter_tool = AgentTool(shelter_agent)
+healthcare_tool = AgentTool(healthcare_agent)
+resource_tool = AgentTool(resource_agent)
+infrastructure_tool = AgentTool(infrastructure_agent)
+government_tool = AgentTool(government_agent)
 
-async def get_shelter_and_evacuation_info(location: str, ctx: Context, needs_pet_friendly: bool = False, needs_medical_access: bool = False) -> str:
-    """Identify safe evacuation routes and recommend nearby emergency shelters."""
-    if not location:
-        return "Please provide a location to find shelters."
-        
-    cache_key = f"shelter_{location}_{needs_pet_friendly}_{needs_medical_access}".lower().strip()
-    cache = ctx.state.get("cache", {})
-    if cache_key in cache:
-        audit_logger.info(f"CACHE HIT: shelter_agent for '{cache_key}'")
-        return cache[cache_key]
-        
-    audit_logger.info(f"API CALL: Invoking shelter_agent for '{cache_key}'")
-    response = await run_node_with_retry(
-        ctx, 
-        shelter_agent, 
-        f"Location: {location}, Pets: {needs_pet_friendly}, Medical: {needs_medical_access}"
-    )
-    
-    if "cache" not in ctx.state:
-        ctx.state["cache"] = {}
-    ctx.state["cache"][cache_key] = response
-    return response
-
-async def get_healthcare_guidance(location: str, ctx: Context, urgent_needs: str = "") -> str:
-    """Locate active medical facilities, emergency care, and get health safety guidance."""
-    if not location:
-        return "Please provide a location to find healthcare facilities."
-        
-    cache_key = f"healthcare_{location}_{urgent_needs}".lower().strip()
-    cache = ctx.state.get("cache", {})
-    if cache_key in cache:
-        audit_logger.info(f"CACHE HIT: healthcare_agent for '{cache_key}'")
-        return cache[cache_key]
-        
-    audit_logger.info(f"API CALL: Invoking healthcare_agent for '{cache_key}'")
-    response = await run_node_with_retry(ctx, healthcare_agent, f"Location: {location}, Urgent Needs: {urgent_needs}")
-    
-    if "cache" not in ctx.state:
-        ctx.state["cache"] = {}
-    ctx.state["cache"][cache_key] = response
-    return response
-
-async def get_essential_resources(location: str, ctx: Context, resource_types: list[str] = []) -> str:
-    """Secure essential supplies such as food, water, power, fuel, and charging stations."""
-    if not location:
-        return "Please provide a location to find resources."
-        
-    resources_str = ",".join(resource_types)
-    cache_key = f"resource_{location}_{resources_str}".lower().strip()
-    cache = ctx.state.get("cache", {})
-    if cache_key in cache:
-        audit_logger.info(f"CACHE HIT: resource_agent for '{cache_key}'")
-        return cache[cache_key]
-        
-    audit_logger.info(f"API CALL: Invoking resource_agent for '{cache_key}'")
-    response = await run_node_with_retry(ctx, resource_agent, f"Location: {location}, Resources: {resources_str}")
-    
-    if "cache" not in ctx.state:
-        ctx.state["cache"] = {}
-    ctx.state["cache"][cache_key] = response
-    return response
-
-async def get_infrastructure_status(location: str, ctx: Context, route_details: str = "") -> str:
-    """Check road closures, transit availability, utility outages, and communication status."""
-    if not location:
-        return "Please provide a location to check infrastructure."
-        
-    cache_key = f"infrastructure_{location}_{route_details}".lower().strip()
-    cache = ctx.state.get("cache", {})
-    if cache_key in cache:
-        audit_logger.info(f"CACHE HIT: infrastructure_agent for '{cache_key}'")
-        return cache[cache_key]
-        
-    audit_logger.info(f"API CALL: Invoking infrastructure_agent for '{cache_key}'")
-    response = await run_node_with_retry(ctx, infrastructure_agent, f"Location: {location}, Route: {route_details}")
-    
-    if "cache" not in ctx.state:
-        ctx.state["cache"] = {}
-    ctx.state["cache"][cache_key] = response
-    return response
-
-async def get_government_advisories(location: str, ctx: Context) -> str:
-    """Fetch official government alerts, safety advisories, and emergency helplines."""
-    if not location:
-        return "Please provide a location to check advisories."
-        
-    cache_key = f"government_{location}".lower().strip()
-    cache = ctx.state.get("cache", {})
-    if cache_key in cache:
-        audit_logger.info(f"CACHE HIT: government_agent for '{cache_key}'")
-        return cache[cache_key]
-        
-    audit_logger.info(f"API CALL: Invoking government_agent for '{cache_key}'")
-    response = await run_node_with_retry(ctx, government_agent, f"Location: {location}")
-    
-    if "cache" not in ctx.state:
-        ctx.state["cache"] = {}
-    ctx.state["cache"][cache_key] = response
-    return response
-
-# 3. Define the Coordinator Agent (Orchestrator) using custom tools
+# 2. Define the Coordinator Agent (Orchestrator) using native AgentTools
 coordinator_agent = Agent(
     name="coordinator_agent",
     model=model,
     tools=[
-        FunctionTool(get_hazard_assessment),
-        FunctionTool(get_shelter_and_evacuation_info),
-        FunctionTool(get_healthcare_guidance),
-        FunctionTool(get_essential_resources),
-        FunctionTool(get_infrastructure_status),
-        FunctionTool(get_government_advisories),
+        hazard_tool,
+        shelter_tool,
+        healthcare_tool,
+        resource_tool,
+        infrastructure_tool,
+        government_tool,
     ],
     instruction=(
         "You are the Coordinator Agent for ResilienceNet AI. Your job is to orchestrate the "
         "disaster resilience response. When a user describes an emergency, you must:\n"
         "1. Analyze their query and decide which specialized agents (tools) to consult. "
-        "Only call the tools that are absolutely necessary for the user's specific query to conserve API quota.\n"
+        "Only call the sub-agents that are absolutely necessary for the user's specific query to conserve API quota.\n"
         "2. Call the relevant specialized agents to gather safety and resource information.\n"
         "3. Synthesize the findings into a clear, actionable, and compassionate response.\n"
         "4. If you need critical missing information (e.g., specific medical needs, pets, or exact location) "
@@ -292,7 +169,7 @@ coordinator_agent = Agent(
     )
 )
 
-# 4. Define the Workflow State Schema
+# 3. Define the Workflow State Schema
 class ResilienceState(BaseModel):
     user_query: str = ""
     sanitized_query: str = ""
@@ -307,9 +184,8 @@ class ResilienceState(BaseModel):
     human_input_received: str = ""
     consent_given: bool = False
     requires_consent: bool = False
-    cache: dict[str, str] = Field(default_factory=dict)
 
-# 5. Define the Workflow Nodes
+# 4. Define the Workflow Nodes
 @node
 async def security_checkpoint(ctx: Context, node_input: Any):
     """Checks the input for safety, prompt injections, PII, and user consent."""
@@ -388,7 +264,7 @@ async def coordinator_node(ctx: Context, node_input: Any):
         query += f"\n[Additional User Info]: {human_input_received}"
         ctx.state["human_input_received"] = ""  # Reset after consuming
         
-    response = await run_node_with_retry(ctx, coordinator_agent, query)
+    response = await ctx.run_node(coordinator_agent, query)
     
     # Check if the coordinator requested human input
     if "HUMAN_INPUT_REQUIRED" in response:
